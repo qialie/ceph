@@ -56,8 +56,22 @@ public:
   void flush();
 
 private:
+  struct PoolWatcherListener : public PoolWatcher<>::Listener {
+    Replayer *replayer;
+
+    PoolWatcherListener(Replayer *replayer) : replayer(replayer) {
+    }
+
+    virtual void handle_update(const ImageIds &added_image_ids,
+                               const ImageIds &removed_image_ids) {
+      replayer->handle_update(added_image_ids, removed_image_ids);
+    }
+  };
+
   void init_local_mirroring_images();
-  void set_sources(const ImageIds &image_ids);
+
+  void handle_update(const ImageIds &added_image_ids,
+                     const ImageIds &removed_image_ids);
 
   void start_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer);
   bool stop_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer);
@@ -88,7 +102,11 @@ private:
   int64_t m_local_pool_id = -1;
   int64_t m_remote_pool_id = -1;
 
-  std::unique_ptr<PoolWatcher> m_pool_watcher;
+  std::string m_remote_mirror_uuid;
+
+  PoolWatcherListener m_pool_watcher_listener;
+  std::unique_ptr<PoolWatcher<> > m_pool_watcher;
+
   std::map<std::string, std::unique_ptr<ImageReplayer<> > > m_image_replayers;
   std::unique_ptr<MirrorStatusWatchCtx> m_status_watcher;
 
