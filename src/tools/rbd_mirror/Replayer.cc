@@ -600,7 +600,7 @@ void Replayer::set_sources(const ImageIds &image_ids)
   bool existing_image_replayers = !m_image_replayers.empty();
   for (auto image_it = m_image_replayers.begin();
        image_it != m_image_replayers.end();) {
-    auto image_id_it = image_ids.find(image_it->first);
+    auto image_id_it = image_ids.find(ImageId(image_it->first));
     if (image_id_it == image_ids.end()) {
       if (image_it->second->is_running()) {
         dout(20) << "stop image replayer for remote image "
