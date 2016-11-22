@@ -398,7 +398,7 @@ void Replayer::init_local_mirroring_images() {
     return;
   }
 
-  std::set<InitImageInfo> images;
+  ImageIds images;
 
   std::string last_read = "";
   int max_read = 1024;
@@ -419,7 +419,7 @@ void Replayer::init_local_mirroring_images() {
              << dendl;
         continue;
       }
-      images.insert(InitImageInfo(it->second, it->first, image_name));
+      images.insert(ImageId(it->second, it->first, image_name));
     }
     if (!mirror_images.empty()) {
       last_read = mirror_images.rbegin()->first;
@@ -578,7 +578,7 @@ void Replayer::set_sources(const ImageIds &image_ids)
   if (!m_init_images.empty()) {
     dout(20) << "scanning initial local image set" << dendl;
     for (auto &remote_image : image_ids) {
-      auto it = m_init_images.find(InitImageInfo(remote_image.global_id));
+      auto it = m_init_images.find(ImageId(remote_image.global_id));
       if (it != m_init_images.end()) {
         m_init_images.erase(it);
       }
@@ -587,10 +587,9 @@ void Replayer::set_sources(const ImageIds &image_ids)
     // the remaining images in m_init_images must be deleted
     for (auto &image : m_init_images) {
       dout(20) << "scheduling the deletion of init image: "
-               << image.name << dendl;
+               << image.id << " (" << image.global_id << ")" << dendl;
       m_image_deleter->schedule_image_delete(m_local_rados, m_local_pool_id,
-                                             image.id, image.name,
-                                             image.global_id);
+                                             image.id, image.global_id);
     }
     m_init_images.clear();
   }
@@ -599,10 +598,13 @@ void Replayer::set_sources(const ImageIds &image_ids)
   bool existing_image_replayers = !m_image_replayers.empty();
   for (auto image_it = m_image_replayers.begin();
        image_it != m_image_replayers.end();) {
-    if (image_ids.find(ImageId(image_it->first)) == image_ids.end()) {
+    auto image_id_it = image_ids.find(image_it->first);
+    if (image_id_it == image_ids.end() ||
+        image_id_it->id != image_it->second->get_remote_image_id()) {
       if (image_it->second->is_running()) {
-        dout(20) << "stop image replayer for "
-                 << image_it->second->get_global_image_id() << dendl;
+        dout(20) << "stop image replayer for remote image "
+                 << image_id_it->id << " (" << image_id_it->global_id << ")"
+                 << dendl;
       }
       if (stop_image_replayer(image_it->second)) {
         image_it = m_image_replayers.erase(image_it);
@@ -646,20 +648,23 @@ void Replayer::set_sources(const ImageIds &image_ids)
   }
 
   for (auto &image_id : image_ids) {
-    auto it = m_image_replayers.find(image_id.id);
+    auto it = m_image_replayers.find(image_id.global_id);
     if (it == m_image_replayers.end()) {
       unique_ptr<ImageReplayer<> > image_replayer(new ImageReplayer<>(
         m_threads, m_image_deleter, m_image_sync_throttler, m_local_rados,
         m_remote_rados, local_mirror_uuid, remote_mirror_uuid, m_local_pool_id,
         m_remote_pool_id, image_id.id, image_id.global_id));
       it = m_image_replayers.insert(
-        std::make_pair(image_id.id, std::move(image_replayer))).first;
+        std::make_pair(image_id.global_id, std::move(image_replayer))).first;
+    } else if (image_id.id != it->second->get_remote_image_id()) {
+      // mismatched replayer in progress of stopping
+      continue;
     }
     if (!it->second->is_running()) {
-      dout(20) << "starting image replayer for "
-               << it->second->get_global_image_id() << dendl;
+      dout(20) << "starting image replayer for remote image "
+               << image_id.id << " (" << image_id.global_id << ")" << dendl;
     }
-    start_image_replayer(it->second, image_id.id, image_id.name);
+    start_image_replayer(it->second);
   }
 }
 
@@ -685,7 +690,7 @@ int Replayer::mirror_image_status_init() {
   r = watch_ctx->register_watch();
   if (r < 0) {
     derr << "error registering watcher for " << watch_ctx->get_oid()
-	 << " object: " << cpp_strerror(r) << dendl;
+        << " object: " << cpp_strerror(r) << dendl;
     return r;
   }
 
@@ -699,18 +704,19 @@ void Replayer::mirror_image_status_shut_down() {
   int r = m_status_watcher->unregister_watch();
   if (r < 0) {
     derr << "error unregistering watcher for " << m_status_watcher->get_oid()
-	 << " object: " << cpp_strerror(r) << dendl;
+        << " object: " << cpp_strerror(r) << dendl;
   }
   m_status_watcher.reset();
 }
 
-void Replayer::start_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer,
-                                    const std::string &image_id,
-                                    const boost::optional<std::string>& image_name)
+void Replayer::start_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer)
 {
   assert(m_lock.is_locked());
-  dout(20) << "global_image_id=" << image_replayer->get_global_image_id()
-           << dendl;
+
+  std::string remote_image_id = image_replayer->get_remote_image_id();
+  std::string global_image_id = image_replayer->get_global_image_id();
+  dout(20) << "remote_image_id=" << remote_image_id << ", "
+           << "global_image_id=" << global_image_id << dendl;
 
   if (!image_replayer->is_stopped()) {
     return;
@@ -721,31 +727,32 @@ void Replayer::start_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer
     return;
   }
 
-  if (image_name) {
-    FunctionContext *ctx = new FunctionContext(
-        [this, image_id, image_name] (int r) {
-          if (r == -ESTALE || r == -ECANCELED) {
-            return;
-          }
+  FunctionContext *ctx = new FunctionContext(
+      [this, remote_image_id, global_image_id] (int r) {
+        dout(20) << "image deleter result: r=" << r << ", "
+                 << "remote_image_id=" << remote_image_id << ", "
+                 << "global_image_id=" << global_image_id << dendl;
+        if (r == -ESTALE || r == -ECANCELED) {
+          return;
+        }
 
-          Mutex::Locker locker(m_lock);
-          auto it = m_image_replayers.find(image_id);
-          if (it == m_image_replayers.end()) {
-            return;
-          }
+        Mutex::Locker locker(m_lock);
+        auto it = m_image_replayers.find(global_image_id);
+        if (it == m_image_replayers.end()) {
+          return;
+        }
 
-          auto &image_replayer = it->second;
-          if (r >= 0) {
-            image_replayer->start();
-          } else {
-            start_image_replayer(image_replayer, image_id, image_name);
-          }
-       }
-    );
+        auto &image_replayer = it->second;
+        if (r >= 0) {
+          image_replayer->start();
+        } else {
+          start_image_replayer(image_replayer);
+        }
+     }
+  );
 
-    m_image_deleter->wait_for_scheduled_deletion(
-      m_local_pool_id, image_replayer->get_global_image_id(), ctx, false);
-  }
+  m_image_deleter->wait_for_scheduled_deletion(
+    m_local_pool_id, image_replayer->get_global_image_id(), ctx, false);
 }
 
 bool Replayer::stop_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer)
@@ -765,7 +772,6 @@ bool Replayer::stop_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer)
         m_local_rados,
         image_replayer->get_local_pool_id(),
         image_replayer->get_local_image_id(),
-        image_replayer->get_local_image_name(),
         image_replayer->get_global_image_id());
     }
     return true;
@@ -780,7 +786,6 @@ bool Replayer::stop_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer)
               m_local_rados,
               image_replayer->get_local_pool_id(),
               image_replayer->get_local_image_id(),
-              image_replayer->get_local_image_name(),
               image_replayer->get_global_image_id());
           }
         }
