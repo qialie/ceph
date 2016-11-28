@@ -13,8 +13,9 @@
 #include "include/stringify.h"
 #include "cls/rbd/cls_rbd_client.h"
 #include "global/global_context.h"
-#include "librbd/Watcher.h"
+#include "librbd/ImageCtx.h"
 #include "librbd/internal.h"
+#include "librbd/Watcher.h"
 #include "Replayer.h"
 #include "Threads.h"
 
@@ -229,7 +230,8 @@ private:
   Watcher *m_watcher;
 };
 
-Replayer::Replayer(Threads *threads, std::shared_ptr<ImageDeleter> image_deleter,
+Replayer::Replayer(Threads<librbd::ImageCtx> *threads,
+                   std::shared_ptr<ImageDeleter> image_deleter,
                    ImageSyncThrottlerRef<> image_sync_throttler,
                    int64_t local_pool_id, const peer_t &peer,
                    const std::vector<const char*> &args) :

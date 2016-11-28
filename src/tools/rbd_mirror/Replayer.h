@@ -21,10 +21,12 @@
 #include "ImageDeleter.h"
 #include "types.h"
 
+namespace librbd { struct ImageCtx; }
+
 namespace rbd {
 namespace mirror {
 
-struct Threads;
+template <typename> struct Threads;
 class ReplayerAdminSocketHook;
 class MirrorStatusWatchCtx;
 
@@ -33,7 +35,8 @@ class MirrorStatusWatchCtx;
  */
 class Replayer {
 public:
-  Replayer(Threads *threads, std::shared_ptr<ImageDeleter> image_deleter,
+  Replayer(Threads<librbd::ImageCtx> *threads,
+           std::shared_ptr<ImageDeleter> image_deleter,
            ImageSyncThrottlerRef<> image_sync_throttler,
            int64_t local_pool_id, const peer_t &peer,
            const std::vector<const char*> &args);
@@ -68,7 +71,7 @@ private:
   int init_rados(const std::string &cluser_name, const std::string &client_name,
                  const std::string &description, RadosRef *rados_ref);
 
-  Threads *m_threads;
+  Threads<librbd::ImageCtx> *m_threads;
   std::shared_ptr<ImageDeleter> m_image_deleter;
   ImageSyncThrottlerRef<> m_image_sync_throttler;
   mutable Mutex m_lock;
