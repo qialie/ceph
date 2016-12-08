@@ -77,7 +77,6 @@ struct ReleaseRequest<MockExclusiveLockImageCtx> : public BaseRequest<ReleaseReq
 
 // template definitions
 #include "librbd/ExclusiveLock.cc"
-template class librbd::ExclusiveLock<librbd::MockExclusiveLockImageCtx>;
 
 ACTION_P(FinishLockUnlock, request) {
   if (request->on_lock_unlock != nullptr) {

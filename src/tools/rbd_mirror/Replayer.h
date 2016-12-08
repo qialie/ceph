@@ -21,10 +21,12 @@
 #include "ImageDeleter.h"
 #include "types.h"
 
+namespace librbd { struct ImageCtx; }
+
 namespace rbd {
 namespace mirror {
 
-struct Threads;
+template <typename> struct Threads;
 class ReplayerAdminSocketHook;
 class MirrorStatusWatchCtx;
 
@@ -33,7 +35,8 @@ class MirrorStatusWatchCtx;
  */
 class Replayer {
 public:
-  Replayer(Threads *threads, std::shared_ptr<ImageDeleter> image_deleter,
+  Replayer(Threads<librbd::ImageCtx> *threads,
+           std::shared_ptr<ImageDeleter> image_deleter,
            ImageSyncThrottlerRef<> image_sync_throttler,
            int64_t local_pool_id, const peer_t &peer,
            const std::vector<const char*> &args);
@@ -53,15 +56,24 @@ public:
   void flush();
 
 private:
-  typedef PoolWatcher::ImageId ImageId;
-  typedef PoolWatcher::ImageIds ImageIds;
+  struct PoolWatcherListener : public PoolWatcher<>::Listener {
+    Replayer *replayer;
+
+    PoolWatcherListener(Replayer *replayer) : replayer(replayer) {
+    }
+
+    virtual void handle_update(const ImageIds &added_image_ids,
+                               const ImageIds &removed_image_ids) {
+      replayer->handle_update(added_image_ids, removed_image_ids);
+    }
+  };
 
   void init_local_mirroring_images();
-  void set_sources(const ImageIds &image_ids);
 
-  void start_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer,
-                            const std::string &image_id,
-                            const boost::optional<std::string>& image_name);
+  void handle_update(const ImageIds &added_image_ids,
+                     const ImageIds &removed_image_ids);
+
+  void start_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer);
   bool stop_image_replayer(unique_ptr<ImageReplayer<> > &image_replayer);
 
   int mirror_image_status_init();
@@ -70,7 +82,7 @@ private:
   int init_rados(const std::string &cluser_name, const std::string &client_name,
                  const std::string &description, RadosRef *rados_ref);
 
-  Threads *m_threads;
+  Threads<librbd::ImageCtx> *m_threads;
   std::shared_ptr<ImageDeleter> m_image_deleter;
   ImageSyncThrottlerRef<> m_image_sync_throttler;
   mutable Mutex m_lock;
@@ -90,32 +102,18 @@ private:
   int64_t m_local_pool_id = -1;
   int64_t m_remote_pool_id = -1;
 
-  std::unique_ptr<PoolWatcher> m_pool_watcher;
+  std::string m_remote_mirror_uuid;
+
+  PoolWatcherListener m_pool_watcher_listener;
+  std::unique_ptr<PoolWatcher<> > m_pool_watcher;
+
   std::map<std::string, std::unique_ptr<ImageReplayer<> > > m_image_replayers;
   std::unique_ptr<MirrorStatusWatchCtx> m_status_watcher;
 
   std::string m_asok_hook_name;
   ReplayerAdminSocketHook *m_asok_hook;
 
-  struct InitImageInfo {
-    std::string global_id;
-    std::string id;
-    std::string name;
-
-    InitImageInfo(const std::string& global_id, const std::string &id = "",
-                  const std::string &name = "")
-      : global_id(global_id), id(id), name(name) {
-    }
-
-    inline bool operator==(const InitImageInfo &rhs) const {
-      return (global_id == rhs.global_id && id == rhs.id && name == rhs.name);
-    }
-    inline bool operator<(const InitImageInfo &rhs) const {
-      return global_id < rhs.global_id;
-    }
-  };
-
-  std::set<InitImageInfo> m_init_images;
+  std::set<ImageId> m_init_images;
 
   class ReplayerThread : public Thread {
     Replayer *m_replayer;

@@ -108,7 +108,7 @@ public:
 				false, features, &order, 0, 0));
     m_remote_image_id = get_image_id(m_remote_ioctx, m_image_name);
 
-    m_threads = new rbd::mirror::Threads(reinterpret_cast<CephContext*>(
+    m_threads = new rbd::mirror::Threads<>(reinterpret_cast<CephContext*>(
       m_local_ioctx.cct()));
 
     m_image_deleter.reset(new rbd::mirror::ImageDeleter(m_threads->work_queue,
@@ -132,9 +132,9 @@ public:
   void create_replayer() {
     m_replayer = new ImageReplayerT(m_threads, m_image_deleter, m_image_sync_throttler,
       rbd::mirror::RadosRef(new librados::Rados(m_local_ioctx)),
-      rbd::mirror::RadosRef(new librados::Rados(m_remote_ioctx)),
-      m_local_mirror_uuid, m_remote_mirror_uuid, m_local_ioctx.get_id(),
-      m_remote_pool_id, m_remote_image_id, "global image id");
+      m_local_mirror_uuid, m_local_ioctx.get_id(), "global image id");
+    m_replayer->add_remote_image(m_remote_mirror_uuid, m_remote_image_id,
+                                 m_remote_ioctx);
   }
 
   void start()
@@ -353,7 +353,7 @@ public:
 
   static int _image_number;
 
-  rbd::mirror::Threads *m_threads = nullptr;
+  rbd::mirror::Threads<> *m_threads = nullptr;
   std::shared_ptr<rbd::mirror::ImageDeleter> m_image_deleter;
   std::shared_ptr<librados::Rados> m_local_cluster;
   librados::Rados m_remote_cluster;
